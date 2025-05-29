@@ -1,0 +1,60 @@
+# Python 編譯文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+
+# 虛擬環境
+venv/
+ENV/
+env/
+
+# IDE 設定
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
+# 日誌文件
+*.log
+logs/
+
+# 環境配置
+.env
+.env.local
+.env.*.local
+
+# 資料庫文件
+*.db
+*.sqlite3
+
+# 測試工具與覆蓋率文件
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# 操作系統生成的文件
+.DS_Store
+Thumbs.db
+
+# 構建與打包目錄
+dist/
+build/
+*.spec
+
+# 臨時文件
+*.bak
+*.tmp
+*.temp
