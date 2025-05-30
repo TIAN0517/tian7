@@ -1,137 +1,106 @@
-import os
-import pyodbc
-from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, scoped_session
+from contextlib import contextmanager
 import logging
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Generator
+from config.usdt_config import config
+from models.database_models import Base
 
-# 加載環境變量
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
+    _instance = None
+    _engine = None
+    _session_factory = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.connection = None
-        self.connect()
+        if self._engine is None:
+            self._initialize_engine()
 
-    def connect(self):
-        """連接到數據庫"""
+    def _initialize_engine(self):
         try:
-            conn_str = (
-                f"DRIVER={{{os.getenv('DB_DRIVER')}}};"
-                f"SERVER={os.getenv('DB_SERVER')};"
-                f"DATABASE={os.getenv('DB_NAME')};"
-                f"UID={os.getenv('DB_USER')};"
-                f"PWD={os.getenv('DB_PASSWORD')};"
-                "TrustServerCertificate=yes;"
+            self._engine = create_engine(
+                config.DATABASE_URL,
+                echo=config.DEBUG
             )
-            self.connection = pyodbc.connect(conn_str)
-            logging.info("數據庫連接成功")
+            self._session_factory = scoped_session(
+                sessionmaker(
+                    bind=self._engine,
+                    autocommit=False,
+                    autoflush=False,
+                    expire_on_commit=False
+                )
+            )
+            with self.get_session() as session:
+                session.execute(text("SELECT 1"))
+            logger.info("SQLite 數據庫連接池初始化成功")
         except Exception as e:
-            logging.error(f"數據庫連接失敗: {str(e)}")
+            logger.error(f"SQLite 數據庫連接池初始化失敗: {str(e)}")
             raise
 
-    def execute_query(self, query, params=None):
-        """執行查詢"""
+    @property
+    def engine(self):
+        return self._engine
+
+    @property
+    def session(self):
+        return self._session_factory()
+
+    @contextmanager
+    def get_session(self) -> Generator:
+        session = self.session
         try:
-            cursor = self.connection.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            return cursor
+            yield session
+            session.commit()
         except Exception as e:
-            logging.error(f"查詢執行失敗: {str(e)}")
+            session.rollback()
+            logger.error(f"數據庫事務回滾: {str(e)}")
+            raise
+        finally:
+            session.close()
+
+    def create_tables(self):
+        try:
+            Base.metadata.create_all(self._engine)
+            logger.info("數據表創建成功")
+        except Exception as e:
+            logger.error(f"創建數據表失敗: {str(e)}")
             raise
 
-    def execute_non_query(self, query, params=None):
-        """執行非查詢操作（如 INSERT, UPDATE, DELETE）"""
+    def drop_tables(self):
         try:
-            cursor = self.connection.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            self.connection.commit()
-            return cursor.rowcount
+            Base.metadata.drop_all(self._engine)
+            logger.info("數據表刪除成功")
         except Exception as e:
-            self.connection.rollback()
-            logging.error(f"非查詢操作執行失敗: {str(e)}")
+            logger.error(f"刪除數據表失敗: {str(e)}")
             raise
 
-    def get_user_points(self, user_id: int) -> int:
-        """獲取用戶積分"""
-        cursor = self.execute_query("""
-            SELECT Points 
-            FROM RanUser.dbo.UserInfo 
-            WHERE UserID = ?
-        """, (user_id,))
-        result = cursor.fetchone()
-        return result[0] if result else 0
-        
-    def update_points(self, user_id: int, amount: int, description: str) -> bool:
-        """更新用戶積分"""
+    def check_connection(self) -> bool:
         try:
-            # 更新用戶積分
-            cursor = self.execute_non_query("""
-                UPDATE RanUser.dbo.UserInfo 
-                SET Points = Points + ? 
-                WHERE UserID = ?
-            """, (amount, user_id))
-            
-            # 記錄交易
-            self.record_transaction(user_id, amount, "POINTS", description)
-            
-            return cursor > 0
+            with self.get_session() as session:
+                session.execute(text("SELECT 1"))
+            return True
         except Exception as e:
-            self.connection.rollback()
-            raise e
-            
-    def record_transaction(self, user_id: int, amount: int, type: str, description: str) -> None:
-        """記錄交易歷史"""
-        self.execute_non_query("""
-            INSERT INTO RanUser.dbo.PointsTransactionHistory 
-            (UserID, Amount, Type, Description, TransactionTime)
-            VALUES (?, ?, ?, ?, GETDATE())
-        """, (user_id, amount, type, description))
-        
-    def record_game_history(self, user_id: int, game_type: str, bet_type: str,
-                          bet_value: str, bet_amount: int, result: int,
-                          win: bool, payout: int) -> None:
-        """記錄遊戲歷史"""
-        self.execute_non_query("""
-            INSERT INTO RanGame.dbo.GameHistory 
-            (UserID, GameType, BetType, BetValue, BetAmount, Result, Win, Payout, PlayTime)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
-        """, (user_id, game_type, bet_type, bet_value, bet_amount, result, win, payout))
-        
-    def get_game_history(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        """獲取遊戲歷史"""
-        cursor = self.execute_query("""
-            SELECT TOP (?) 
-                GameType, BetType, BetValue, BetAmount, Result, Win, Payout, PlayTime
-            FROM RanGame.dbo.GameHistory
-            WHERE UserID = ?
-            ORDER BY PlayTime DESC
-        """, (limit, user_id))
-        
-        columns = [column[0] for column in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
-        
-    def get_transaction_history(self, user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        """獲取交易歷史"""
-        cursor = self.execute_query("""
-            SELECT TOP (?) 
-                Amount, Type, Description, TransactionTime
-            FROM RanUser.dbo.PointsTransactionHistory
-            WHERE UserID = ?
-            ORDER BY TransactionTime DESC
-        """, (limit, user_id))
-        
-        columns = [column[0] for column in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
-        
+            logger.error(f"檢查數據庫連接失敗: {str(e)}")
+            return False
+
+    def get_connection_info(self) -> dict:
+        return {
+            "sqlite_path": config.SQLITE_DB_PATH
+        }
+
     def close(self):
-        """關閉數據庫連接"""
-        if self.connection:
-            self.connection.close()
-            logging.info("數據庫連接已關閉") 
+        if self._engine:
+            self._engine.dispose()
+            logger.info("數據庫連接池已關閉")
+
+db_manager = DatabaseManager()
+get_session = db_manager.get_session
+check_connection = db_manager.check_connection
+create_tables = db_manager.create_tables
+drop_tables = db_manager.drop_tables

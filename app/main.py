@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Jy技術團隊 遊戲帝國API",
-    description="23款經典遊戲 + USDT系統 + 企業級安全",
+    description="24款經典遊戲 + USDT系統 + 企業級安全",
     version="1.0.0"
 )
 

@@ -68,7 +68,7 @@ class RegisterDialog(QDialog):
         self.confirm_input = QLineEdit()
         self.confirm_input.setPlaceholderText("請再次輸入密碼")
         self.confirm_input.setEchoMode(QLineEdit.Password)
-        self.confirm_input.textChanged.connect(self.validate_confirm)
+        self.confirm_input.textChanged.connect(self.validate_confirm_password)
         confirm_layout.addWidget(confirm_label)
         confirm_layout.addWidget(self.confirm_input)
         layout.addLayout(confirm_layout)
@@ -77,21 +77,6 @@ class RegisterDialog(QDialog):
         self.confirm_hint = QLabel("")
         self.confirm_hint.setObjectName("hint")
         layout.addWidget(self.confirm_hint)
-        
-        # 郵箱輸入
-        email_layout = QHBoxLayout()
-        email_label = QLabel("郵箱：")
-        self.email_input = QLineEdit()
-        self.email_input.setPlaceholderText("請輸入郵箱地址")
-        self.email_input.textChanged.connect(self.validate_email)
-        email_layout.addWidget(email_label)
-        email_layout.addWidget(self.email_input)
-        layout.addLayout(email_layout)
-        
-        # 郵箱提示
-        self.email_hint = QLabel("")
-        self.email_hint.setObjectName("hint")
-        layout.addWidget(self.email_hint)
         
         # 註冊按鈕
         self.register_button = QPushButton("註冊")
@@ -112,7 +97,7 @@ class RegisterDialog(QDialog):
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
         
-    def validate_username(self):
+    def validate_username(self) -> bool:
         """驗證用戶名"""
         username = self.username_input.text().strip()
         if not username:
@@ -120,23 +105,32 @@ class RegisterDialog(QDialog):
             self.username_hint.setStyleSheet("color: #e94560;")
             return False
             
-        if len(username) < 3 or len(username) > 20:
-            self.username_hint.setText("用戶名長度必須在3-20個字符之間")
+        if len(username) < 3:
+            self.username_hint.setText("用戶名長度不能小於3個字符")
+            self.username_hint.setStyleSheet("color: #e94560;")
+            return False
+            
+        if len(username) > 20:
+            self.username_hint.setText("用戶名長度不能超過20個字符")
+            self.username_hint.setStyleSheet("color: #e94560;")
+            return False
+            
+        if not username.isalnum():
+            self.username_hint.setText("用戶名只能包含字母和數字")
             self.username_hint.setStyleSheet("color: #e94560;")
             return False
             
         # 檢查用戶名是否已存在
         if Auth.check_username_exists(username):
-            self.username_hint.setText("該用戶名已被使用")
+            self.username_hint.setText("用戶名已存在")
             self.username_hint.setStyleSheet("color: #e94560;")
             return False
             
         self.username_hint.setText("用戶名可用")
         self.username_hint.setStyleSheet("color: #4CAF50;")
-        self.update_register_button()
         return True
         
-    def validate_password(self):
+    def validate_password(self) -> bool:
         """驗證密碼"""
         password = self.password_input.text()
         if not password:
@@ -166,10 +160,9 @@ class RegisterDialog(QDialog):
             
         self.password_hint.setText("密碼強度良好")
         self.password_hint.setStyleSheet("color: #4CAF50;")
-        self.validate_confirm()
         return True
         
-    def validate_confirm(self):
+    def validate_confirm_password(self) -> bool:
         """驗證確認密碼"""
         password = self.password_input.text()
         confirm = self.confirm_input.text()
@@ -186,72 +179,39 @@ class RegisterDialog(QDialog):
             
         self.confirm_hint.setText("密碼確認成功")
         self.confirm_hint.setStyleSheet("color: #4CAF50;")
-        self.update_register_button()
-        return True
-        
-    def validate_email(self):
-        """驗證郵箱"""
-        email = self.email_input.text().strip()
-        if not email:
-            self.email_hint.setText("郵箱不能為空")
-            self.email_hint.setStyleSheet("color: #e94560;")
-            return False
-            
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(pattern, email):
-            self.email_hint.setText("郵箱格式不正確")
-            self.email_hint.setStyleSheet("color: #e94560;")
-            return False
-            
-        # 檢查郵箱是否已註冊
-        if Auth.check_email_exists(email):
-            self.email_hint.setText("該郵箱已被註冊")
-            self.email_hint.setStyleSheet("color: #e94560;")
-            return False
-            
-        self.email_hint.setText("郵箱格式正確")
-        self.email_hint.setStyleSheet("color: #4CAF50;")
-        self.update_register_button()
         return True
         
     def update_register_button(self):
         """更新註冊按鈕狀態"""
-        is_valid = all([
-            self.validate_username(),
-            self.validate_password(),
-            self.validate_confirm(),
-            self.validate_email()
-        ])
+        is_valid = (
+            self.validate_username() and
+            self.validate_password() and
+            self.validate_confirm_password()
+        )
         self.register_button.setEnabled(is_valid)
         
     def handle_register(self):
         """處理註冊"""
         if not self.register_button.isEnabled():
             return
-            
         try:
             # 收集註冊信息
             username = self.username_input.text().strip()
             password = self.password_input.text()
-            email = self.email_input.text().strip()
-            
+            # 不再收集 email
             # 顯示進度條
             self.progress_bar.show()
             self.progress_bar.setValue(0)
-            
             # 模擬郵箱驗證過程
             self.verify_timer = QTimer()
             self.verify_timer.timeout.connect(self.update_verify_progress)
             self.verify_timer.start(100)
-            
-            # 註冊用戶
-            user = Auth.register_user(username, password, email)
-            if user:
+            # 註冊用戶（不傳 email）
+            if Auth.register(username, password, None):
                 QMessageBox.information(self, "註冊成功", "帳號註冊成功！")
                 self.accept()
             else:
                 QMessageBox.warning(self, "註冊失敗", "註冊失敗，請稍後重試")
-                
         except Exception as e:
             logger.error(f"註冊失敗: {str(e)}")
             QMessageBox.critical(self, "錯誤", f"註冊失敗：{str(e)}")

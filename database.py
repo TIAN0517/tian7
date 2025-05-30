@@ -1,61 +1,57 @@
-import pyodbc
+import sqlite3
 import bcrypt
 import json
 import os
 from datetime import datetime
+import logging
+from typing import Optional, Dict, Any
+import backoff
+
+# 設置日誌
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
+    """數據庫連接管理類"""
     def __init__(self):
-        self.conn = None
-        self.cursor = None
-        self.connect()
+        self.conn = sqlite3.connect("ranuser.db")
+        self.conn.row_factory = sqlite3.Row
     
-    def connect(self):
+    @backoff.on_exception(
+        backoff.expo,
+        Exception,
+        max_tries=3,
+        max_time=30
+    )
+    def _connect(self):
+        """建立數據庫連接"""
         try:
-            # 連接 SQL Server
-            self.conn = pyodbc.connect(
-                'DRIVER={SQL Server};'
-                'SERVER=localhost;'
-                'DATABASE=GameLauncher;'
-                'Trusted_Connection=yes;'
-            )
-            self.cursor = self.conn.cursor()
-            print("數據庫連接成功")
+            self.conn = sqlite3.connect("ranuser.db")
+            self.conn.row_factory = sqlite3.Row
+            logger.info("數據庫連接成功")
         except Exception as e:
-            print(f"數據庫連接失敗: {e}")
+            logger.error(f"數據庫連接失敗: {str(e)}")
             raise
     
     def close(self):
+        """關閉數據庫連接"""
         if self.conn:
             self.conn.close()
+            logger.info("數據庫連接已關閉")
     
     def register_user(self, username, password, email):
         try:
-            # 檢查用戶名是否已存在
-            self.cursor.execute(
-                "SELECT COUNT(*) FROM Users WHERE Username = ?",
-                (username,)
-            )
-            if self.cursor.fetchone()[0] > 0:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM Users WHERE Username = ?", (username,))
+            if cursor.fetchone()[0] > 0:
                 return False, "用戶名已存在"
-            
-            # 檢查郵箱是否已存在
-            self.cursor.execute(
-                "SELECT COUNT(*) FROM Users WHERE Email = ?",
-                (email,)
-            )
-            if self.cursor.fetchone()[0] > 0:
+            cursor.execute("SELECT COUNT(*) FROM Users WHERE Email = ?", (email,))
+            if cursor.fetchone()[0] > 0:
                 return False, "郵箱已被註冊"
-            
-            # 密碼加密
             hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-            
-            # 插入新用戶
-            self.cursor.execute("""
+            cursor.execute("""
                 INSERT INTO Users (Username, Password, Email, Points, CreatedAt)
                 VALUES (?, ?, ?, ?, ?)
             """, (username, hashed_password, email, 0, datetime.now()))
-            
             self.conn.commit()
             return True, "註冊成功"
         except Exception as e:
@@ -64,26 +60,17 @@ class DatabaseManager:
     
     def verify_user(self, username, password):
         try:
-            # 獲取用戶信息
-            self.cursor.execute(
-                "SELECT UserID, Password, Points FROM Users WHERE Username = ?",
-                (username,)
-            )
-            result = self.cursor.fetchone()
-            
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT UserID, Password, Points FROM Users WHERE Username = ?", (username,))
+            result = cursor.fetchone()
             if not result:
                 return False, "用戶名不存在"
-            
             user_id, hashed_password, points = result
-            
-            # 驗證密碼
             if bcrypt.checkpw(password.encode('utf-8'), hashed_password):
-                # 記錄登入歷史
-                self.cursor.execute("""
+                cursor.execute("""
                     INSERT INTO UserLoginHistory (UserID, LoginTime, IPAddress)
                     VALUES (?, ?, ?)
-                """, (user_id, datetime.now(), "127.0.0.1"))  # TODO: 獲取實際IP
-                
+                """, (user_id, datetime.now(), "127.0.0.1"))
                 self.conn.commit()
                 return True, {"user_id": user_id, "points": points}
             else:
@@ -94,11 +81,9 @@ class DatabaseManager:
     
     def get_user_points(self, user_id):
         try:
-            self.cursor.execute(
-                "SELECT Points FROM Users WHERE UserID = ?",
-                (user_id,)
-            )
-            result = self.cursor.fetchone()
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT Points FROM Users WHERE UserID = ?", (user_id,))
+            result = cursor.fetchone()
             return result[0] if result else 0
         except Exception as e:
             print(f"獲取用戶積分失敗: {e}")
@@ -106,20 +91,17 @@ class DatabaseManager:
     
     def update_user_points(self, user_id, points_change, description):
         try:
-            # 更新用戶積分
-            self.cursor.execute("""
+            cursor = self.conn.cursor()
+            cursor.execute("""
                 UPDATE Users 
                 SET Points = Points + ? 
                 WHERE UserID = ?
             """, (points_change, user_id))
-            
-            # 記錄交易歷史
-            self.cursor.execute("""
+            cursor.execute("""
                 INSERT INTO PointsTransactionHistory 
                 (UserID, PointsChange, Description, TransactionTime)
                 VALUES (?, ?, ?, ?)
             """, (user_id, points_change, description, datetime.now()))
-            
             self.conn.commit()
             return True
         except Exception as e:
@@ -128,33 +110,56 @@ class DatabaseManager:
     
     def get_user_items(self, user_id):
         try:
-            self.cursor.execute("""
+            cursor = self.conn.cursor()
+            cursor.execute("""
                 SELECT vi.ItemName, vi.Description, uvi.Quantity
                 FROM UserVirtualItems uvi
                 JOIN VirtualItems vi ON uvi.ItemID = vi.ItemID
                 WHERE uvi.UserID = ?
             """, (user_id,))
-            return self.cursor.fetchall()
+            return cursor.fetchall()
         except Exception as e:
             print(f"獲取用戶物品失敗: {e}")
             return []
 
+    @backoff.on_exception(
+        backoff.expo,
+        Exception,
+        max_tries=3,
+        max_time=30
+    )
+    def execute_query(self, query: str, params: Optional[tuple] = None) -> Any:
+        """執行查詢"""
+        try:
+            cursor = self.conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            return cursor
+        except Exception as e:
+            logger.error(f"執行查詢失敗: {str(e)}")
+            raise
+
 class UserManager:
+    """用戶管理類"""
     def __init__(self):
-        self.conn_str = (
-            "DRIVER={SQL Server};"
-            "SERVER=localhost;"
-            "DATABASE=GameLauncher;"
-            "Trusted_Connection=yes;"
-        )
+        self.db_path = "ranuser.db"
         self.credentials_file = "credentials.json"
     
-    def connect(self):
+    @backoff.on_exception(
+        backoff.expo,
+        Exception,
+        max_tries=3,
+        max_time=30
+    )
+    def get_connection(self):
+        """獲取數據庫連接"""
         try:
-            return pyodbc.connect(self.conn_str)
-        except pyodbc.Error as e:
-            print(f"Database connection error: {e}")
-            return None
+            return sqlite3.connect(self.db_path)
+        except Exception as e:
+            logger.error(f"獲取數據庫連接失敗: {str(e)}")
+            raise
     
     def register(self, username, password, email):
         """註冊新用戶"""
@@ -167,7 +172,7 @@ class UserManager:
         if not self._validate_email(email):
             return False, "請輸入有效的電子郵件地址"
         
-        conn = self.connect()
+        conn = self.get_connection()
         if not conn:
             return False, "數據庫連接失敗"
         
@@ -175,12 +180,12 @@ class UserManager:
             cursor = conn.cursor()
             
             # 檢查用戶名是否已存在
-            cursor.execute("SELECT COUNT(*) FROM Users WHERE Username = ?", username)
+            cursor.execute("SELECT COUNT(*) FROM Users WHERE Username = ?", (username,))
             if cursor.fetchone()[0] > 0:
                 return False, "用戶名已存在"
             
             # 檢查郵箱是否已存在
-            cursor.execute("SELECT COUNT(*) FROM Users WHERE Email = ?", email)
+            cursor.execute("SELECT COUNT(*) FROM Users WHERE Email = ?", (email,))
             if cursor.fetchone()[0] > 0:
                 return False, "郵箱已被註冊"
             
@@ -191,12 +196,12 @@ class UserManager:
             cursor.execute("""
                 INSERT INTO Users (Username, Password, Email, CreatedAt, Points)
                 VALUES (?, ?, ?, ?, ?)
-            """, username, hashed_password, email, datetime.now(), 0)
+            """, (username, hashed_password, email, datetime.now(), 0))
             
             conn.commit()
             return True, "註冊成功"
             
-        except pyodbc.Error as e:
+        except Exception as e:
             print(f"Registration error: {e}")
             return False, "註冊失敗，請稍後重試"
         finally:
@@ -204,24 +209,19 @@ class UserManager:
     
     def login(self, username, password, remember=False):
         """用戶登入"""
-        conn = self.connect()
+        conn = self.get_connection()
         if not conn:
             return False, "數據庫連接失敗"
         
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT UserID, Username, Password, Points
-                FROM Users
-                WHERE Username = ?
-            """, username)
-            
+            cursor.execute("SELECT UserID, Username, Password, Points FROM Users WHERE Username = ?", (username,))
             user = cursor.fetchone()
             if not user:
                 return False, "用戶名或密碼錯誤"
             
             # 驗證密碼
-            if not bcrypt.checkpw(password.encode('utf-8'), user.Password.encode('utf-8')):
+            if not bcrypt.checkpw(password.encode('utf-8'), user[2]):
                 return False, "用戶名或密碼錯誤"
             
             # 如果選擇記住我，保存登入信息
@@ -232,16 +232,16 @@ class UserManager:
             cursor.execute("""
                 INSERT INTO LoginHistory (UserID, LoginTime, IPAddress)
                 VALUES (?, ?, ?)
-            """, user.UserID, datetime.now(), "127.0.0.1")  # TODO: 獲取實際IP
+            """, (user[0], datetime.now(), "127.0.0.1"))  # TODO: 獲取實際IP
             
             conn.commit()
             return True, {
-                "user_id": user.UserID,
-                "username": user.Username,
-                "points": user.Points
+                "user_id": user[0],
+                "username": user[1],
+                "points": user[3]
             }
             
-        except pyodbc.Error as e:
+        except Exception as e:
             print(f"Login error: {e}")
             return False, "登入失敗，請稍後重試"
         finally:
@@ -298,7 +298,7 @@ class UserManager:
     
     def update_points(self, user_id, points_change, reason):
         """更新用戶積分"""
-        conn = self.connect()
+        conn = self.get_connection()
         if not conn:
             return False, "數據庫連接失敗"
         
@@ -310,18 +310,18 @@ class UserManager:
                 UPDATE Users
                 SET Points = Points + ?
                 WHERE UserID = ?
-            """, points_change, user_id)
+            """, (points_change, user_id))
             
             # 記錄交易歷史
             cursor.execute("""
                 INSERT INTO TransactionHistory (UserID, PointsChange, Reason, TransactionTime)
                 VALUES (?, ?, ?, ?)
-            """, user_id, points_change, reason, datetime.now())
+            """, (user_id, points_change, reason, datetime.now()))
             
             conn.commit()
             return True, "積分更新成功"
             
-        except pyodbc.Error as e:
+        except Exception as e:
             print(f"Points update error: {e}")
             return False, "積分更新失敗"
         finally:
@@ -329,31 +329,36 @@ class UserManager:
     
     def get_transaction_history(self, user_id, limit=10):
         """獲取用戶交易歷史"""
-        conn = self.connect()
+        conn = self.get_connection()
         if not conn:
             return False, "數據庫連接失敗"
         
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT TOP (?) TransactionTime, PointsChange, Reason
+                SELECT TransactionTime, PointsChange, Reason
                 FROM TransactionHistory
                 WHERE UserID = ?
                 ORDER BY TransactionTime DESC
-            """, limit, user_id)
+                LIMIT ?
+            """, (user_id, limit))
             
             history = []
             for row in cursor.fetchall():
                 history.append({
-                    "time": row.TransactionTime,
-                    "points": row.PointsChange,
-                    "reason": row.Reason
+                    "time": row[0],
+                    "points": row[1],
+                    "reason": row[2]
                 })
             
             return True, history
             
-        except pyodbc.Error as e:
+        except Exception as e:
             print(f"Transaction history error: {e}")
             return False, "獲取交易歷史失敗"
         finally:
-            conn.close() 
+            conn.close()
+
+# 初始化數據庫管理器
+db_manager = DatabaseManager()
+user_manager = UserManager()
